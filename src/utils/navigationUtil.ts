@@ -295,6 +295,68 @@ const convertBlobToDataURL = async (blobUrl) => {
     reader.readAsDataURL(blob);
   });
 };
+
+const continuousChapterId = (chapterDocIndex: number) =>
+  `kookit-continuous-chapter-${chapterDocIndex}`;
+
+const escapeHtmlAttribute = (value: string) =>
+  (value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+const shouldRenderContinuousChapters = (format: string) =>
+  format === "EPUB" || format === "CACHE";
+
+const buildContinuousChapterText = async (chapterDocList: ChapterDoc[]) => {
+  const cachedChapterText = (chapterDocList as any).__continuousChapterText;
+  if (cachedChapterText) {
+    return cachedChapterText;
+  }
+
+  const chapterSections: string[] = [];
+  chapterSections.push(`
+<style id="kookit-continuous-chapter-style">
+  .kookit-continuous-chapter,
+  .kookit-continuous-chapter > *:first-child {
+    break-before: auto !important;
+    break-after: auto !important;
+    page-break-before: auto !important;
+    page-break-after: auto !important;
+    -webkit-column-break-before: auto !important;
+    -webkit-column-break-after: auto !important;
+  }
+  .kookit-continuous-chapter {
+    display: block !important;
+  }
+</style>`);
+
+  for (let index = 0; index < chapterDocList.length; index++) {
+    const chapterText = await handleOneChapterDoc(
+      chapterDocList[index].text,
+      false
+    );
+    const chapterDoc = new DOMParser().parseFromString(
+      chapterText,
+      "text/html"
+    );
+    const bodyAttrs = getBodyAttributes(chapterText) as any;
+    const headHtml = chapterDoc.head ? chapterDoc.head.innerHTML : "";
+    const bodyHtml = chapterDoc.body ? chapterDoc.body.innerHTML : chapterText;
+    const className = escapeHtmlAttribute(bodyAttrs["class"] || "");
+    const style = escapeHtmlAttribute(bodyAttrs["style"] || "");
+
+    chapterSections.push(
+      `<section id="${continuousChapterId(index)}" data-kookit-chapter-doc-index="${index}" class="kookit-continuous-chapter ${className}" style="${style}">${headHtml}${bodyHtml}</section>`
+    );
+  }
+
+  const continuousChapterText = chapterSections.join("");
+  (chapterDocList as any).__continuousChapterText = continuousChapterText;
+  return continuousChapterText;
+};
+
 export const handleRenderChapter = async (
   chapterDocIndex: number,
   chapterTitle: string,
@@ -342,12 +404,12 @@ export const handleRenderChapter = async (
   if (chapterDocIndex === -1 || chapterDocIndex > chapterDocList.length - 1) {
     chapterDocIndex = 0;
   }
-  let chapterText = await handleOneChapterDoc(
-    chapterDocList[chapterDocIndex].text,
-    false
-  );
-  let bodyAttrs = getBodyAttributes(chapterText);
-  const viewport = getViewportSize(chapterText);
+  const isContinuousChapterRender = shouldRenderContinuousChapters(format);
+  let chapterText = isContinuousChapterRender
+    ? await buildContinuousChapterText(chapterDocList)
+    : await handleOneChapterDoc(chapterDocList[chapterDocIndex].text, false);
+  let bodyAttrs = isContinuousChapterRender ? {} : getBodyAttributes(chapterText);
+  const viewport = isContinuousChapterRender ? null : getViewportSize(chapterText);
   doc.body.innerHTML = chapterText;
   // Apply body attrs without duplicating style on re-render
   if (bodyAttrs["class"]) {
@@ -425,7 +487,15 @@ export const handleRenderChapter = async (
   tempLocation.xpath = `/body/DocFragment[${chapterDocIndex + 1}]`;
   tempLocation.timestamp = parseInt(new Date().getTime() / 1000 + "");
   await handleIframeHeight(element, readerMode, format, iframe, doc);
-  await handleScrollPosition(element, readerMode, "", "", "", "", doc);
+  await handleScrollPosition(
+    element,
+    readerMode,
+    "",
+    "",
+    isContinuousChapterRender ? `#${continuousChapterId(chapterDocIndex)}` : "",
+    "",
+    doc
+  );
 };
 
 export function getBodyAttributes(htmlStr: string) {
