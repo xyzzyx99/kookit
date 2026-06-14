@@ -309,12 +309,10 @@ const escapeHtmlAttribute = (value: string) =>
 const shouldRenderContinuousChapters = (format: string) =>
   format === "EPUB" || format === "CACHE";
 
-const buildContinuousChapterText = async (chapterDocList: ChapterDoc[]) => {
-  const cachedChapterText = (chapterDocList as any).__continuousChapterText;
-  if (cachedChapterText) {
-    return cachedChapterText;
-  }
-
+const buildContinuousChapterText = async (
+  chapterDocList: ChapterDoc[],
+  chapterDocIndex: number
+) => {
   const chapterSections: string[] = [];
   chapterSections.push(`
 <style id="kookit-continuous-chapter-style">
@@ -332,7 +330,13 @@ const buildContinuousChapterText = async (chapterDocList: ChapterDoc[]) => {
   }
 </style>`);
 
-  for (let index = 0; index < chapterDocList.length; index++) {
+  // Lazy window: render only nearby chapters instead of the whole book.
+  // This keeps the next chapter in the same layout flow while avoiding the
+  // high CPU/memory cost of rendering every chapter at once.
+  const startIndex = Math.max(0, chapterDocIndex - 1);
+  const endIndex = Math.min(chapterDocList.length - 1, chapterDocIndex + 1);
+
+  for (let index = startIndex; index <= endIndex; index++) {
     const chapterText = await handleOneChapterDoc(
       chapterDocList[index].text,
       false
@@ -352,9 +356,7 @@ const buildContinuousChapterText = async (chapterDocList: ChapterDoc[]) => {
     );
   }
 
-  const continuousChapterText = chapterSections.join("");
-  (chapterDocList as any).__continuousChapterText = continuousChapterText;
-  return continuousChapterText;
+  return chapterSections.join("");
 };
 
 export const handleRenderChapter = async (
@@ -406,7 +408,7 @@ export const handleRenderChapter = async (
   }
   const isContinuousChapterRender = shouldRenderContinuousChapters(format);
   let chapterText = isContinuousChapterRender
-    ? await buildContinuousChapterText(chapterDocList)
+    ? await buildContinuousChapterText(chapterDocList, chapterDocIndex)
     : await handleOneChapterDoc(chapterDocList[chapterDocIndex].text, false);
   let bodyAttrs = isContinuousChapterRender ? {} : getBodyAttributes(chapterText);
   const viewport = isContinuousChapterRender ? null : getViewportSize(chapterText);
