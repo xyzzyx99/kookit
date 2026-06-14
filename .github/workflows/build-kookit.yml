@@ -1,0 +1,81 @@
+name: Build Kookit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "rollup.config.js"
+      - "tsconfig.json"
+      - ".github/workflows/build-kookit.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "rollup.config.js"
+      - "tsconfig.json"
+      - ".github/workflows/build-kookit.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Redirect Rollup outputs to workflow artifact folders
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("rollup.config.js")
+          text = path.read_text()
+          text = text.replace(
+              'const basePath = "D:\\\\Project\\\\koodo-reader";',
+              'const basePath = path.join(process.cwd(), "artifacts", "koodo-reader");',
+          )
+          text = text.replace(
+              'const basePath = "D:\\\\Project\\\\koodo-reader-expo";',
+              'const basePath = path.join(process.cwd(), "artifacts", "koodo-reader-expo");',
+          )
+          path.write_text(text)
+          PY
+
+          mkdir -p artifacts/koodo-reader/src/assets/lib
+          mkdir -p artifacts/koodo-reader-expo/assets/lib
+
+      - name: Build bundled JavaScript
+        run: npm run build
+
+      - name: Upload desktop Koodo Reader bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: kookit-desktop-bundle
+          path: artifacts/koodo-reader/src/assets/lib/kookit.min.js
+          if-no-files-found: error
+
+      - name: Upload mobile bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: kookit-mobile-bundles
+          path: |
+            artifacts/koodo-reader-expo/assets/lib/kookit.min.txt
+            artifacts/koodo-reader-expo/assets/lib/kookit-mobile.min.js
+          if-no-files-found: warn
