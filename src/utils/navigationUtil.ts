@@ -349,13 +349,104 @@ const continuousChapterStyle = `
   }
 </style>`;
 
-const continuousChapterSectionCache = new WeakMap<Document, Map<number, string>>();
+const CONTINUOUS_CHAPTER_PREFETCH_RADIUS = 5;
 
-const buildContinuousChapterSection = async (
-  chapterDocList: ChapterDoc[],
+const continuousChapterSectionCache = new WeakMap<Document, Map<number, string>>();
+const continuousChapterSectionBuildPromises = new WeakMap<
+  Document,
+  Map<number, Promise<string>>
+>();
+let continuousChapterWorker: Worker | null | undefined;
+let continuousChapterWorkerRequestId = 0;
+const continuousChapterWorkerRequests = new Map<
+  number,
+  {
+    resolve: (value: string) => void;
+    reject: (reason?: any) => void;
+  }
+>();
+
+const continuousChapterWorkerSource = String.raw`
+const escapeHtmlAttribute = (value) =>
+  (value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+const getBodyAttributes = (htmlStr) => {
+  const bodyTagMatch = htmlStr.match(/<body\b([^>]*)>/i);
+  if (!bodyTagMatch) return {};
+  const attrStr = bodyTagMatch[1];
+  const attributes = {};
+  const attrRegex = /([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^>\s]+))/g;
+  let match;
+  while ((match = attrRegex.exec(attrStr)) !== null) {
+    const value = match[2] || match[3] || match[4] || "";
+    attributes[match[1]] = value;
+  }
+  return attributes;
+};
+const getInnerHtml = (html, tagName) => {
+  const pattern = new RegExp("<" + tagName + "\\b[^>]*>([\\s\\S]*?)<\\/" + tagName + ">", "i");
+  const match = html.match(pattern);
+  return match ? match[1] : "";
+};
+self.onmessage = (event) => {
+  const { id, index, sectionId, chapterText } = event.data || {};
+  try {
+    const bodyAttrs = getBodyAttributes(chapterText || "");
+    const headHtml = getInnerHtml(chapterText || "", "head");
+    const bodyHtml = getInnerHtml(chapterText || "", "body") || chapterText || "";
+    const className = escapeHtmlAttribute(bodyAttrs["class"] || "");
+    const style = escapeHtmlAttribute(bodyAttrs["style"] || "");
+    const sectionHtml = '<section id="' + sectionId + '" data-kookit-chapter-doc-index="' + index + '" class="kookit-continuous-chapter ' + className + '" style="' + style + '">' + headHtml + bodyHtml + '</section>';
+    self.postMessage({ id, sectionHtml });
+  } catch (error) {
+    self.postMessage({ id, error: error && error.message ? error.message : String(error) });
+  }
+};
+`;
+
+const getContinuousChapterWorker = () => {
+  if (continuousChapterWorker !== undefined) return continuousChapterWorker;
+  if (typeof Worker === "undefined" || typeof Blob === "undefined") {
+    continuousChapterWorker = null;
+    return continuousChapterWorker;
+  }
+  try {
+    const blob = new Blob([continuousChapterWorkerSource], {
+      type: "application/javascript",
+    });
+    const workerUrl = URL.createObjectURL(blob);
+    continuousChapterWorker = new Worker(workerUrl);
+    URL.revokeObjectURL(workerUrl);
+    continuousChapterWorker.onmessage = (event) => {
+      const { id, sectionHtml, error } = event.data || {};
+      const request = continuousChapterWorkerRequests.get(id);
+      if (!request) return;
+      continuousChapterWorkerRequests.delete(id);
+      if (error) {
+        request.reject(new Error(error));
+      } else {
+        request.resolve(sectionHtml || "");
+      }
+    };
+    continuousChapterWorker.onerror = (error) => {
+      continuousChapterWorkerRequests.forEach((request) => request.reject(error));
+      continuousChapterWorkerRequests.clear();
+      continuousChapterWorker?.terminate();
+      continuousChapterWorker = null;
+    };
+  } catch (error) {
+    continuousChapterWorker = null;
+  }
+  return continuousChapterWorker;
+};
+
+const buildContinuousChapterSectionOnMainThread = (
+  chapterText: string,
   index: number
 ) => {
-  const chapterText = await handleOneChapterDoc(chapterDocList[index].text, false);
   const chapterDoc = new DOMParser().parseFromString(chapterText, "text/html");
   const bodyAttrs = getBodyAttributes(chapterText) as any;
   const headHtml = chapterDoc.head ? chapterDoc.head.innerHTML : "";
@@ -366,20 +457,114 @@ const buildContinuousChapterSection = async (
   return `<section id="${continuousChapterId(index)}" data-kookit-chapter-doc-index="${index}" class="kookit-continuous-chapter ${className}" style="${style}">${headHtml}${bodyHtml}</section>`;
 };
 
-const getCachedContinuousChapterSection = async (
-  doc: Document,
+const buildContinuousChapterSectionWithWorker = (
+  chapterText: string,
+  index: number
+) => {
+  const worker = getContinuousChapterWorker();
+  if (!worker) {
+    return Promise.resolve(
+      buildContinuousChapterSectionOnMainThread(chapterText, index)
+    );
+  }
+
+  const id = ++continuousChapterWorkerRequestId;
+  return new Promise<string>((resolve, reject) => {
+    continuousChapterWorkerRequests.set(id, { resolve, reject });
+    try {
+      worker.postMessage({
+        id,
+        index,
+        sectionId: continuousChapterId(index),
+        chapterText,
+      });
+    } catch (error) {
+      continuousChapterWorkerRequests.delete(id);
+      reject(error);
+    }
+  }).catch(() => buildContinuousChapterSectionOnMainThread(chapterText, index));
+};
+
+const buildContinuousChapterSection = async (
   chapterDocList: ChapterDoc[],
   index: number
 ) => {
+  const chapterText = await handleOneChapterDoc(chapterDocList[index].text, false);
+  return await buildContinuousChapterSectionWithWorker(chapterText, index);
+};
+
+const getContinuousChapterCache = (doc: Document) => {
   let cache = continuousChapterSectionCache.get(doc);
   if (!cache) {
     cache = new Map<number, string>();
     continuousChapterSectionCache.set(doc, cache);
   }
-  if (!cache.has(index)) {
-    cache.set(index, await buildContinuousChapterSection(chapterDocList, index));
+  return cache;
+};
+
+const getContinuousChapterPromiseCache = (doc: Document) => {
+  let promiseCache = continuousChapterSectionBuildPromises.get(doc);
+  if (!promiseCache) {
+    promiseCache = new Map<number, Promise<string>>();
+    continuousChapterSectionBuildPromises.set(doc, promiseCache);
   }
-  return cache.get(index) || "";
+  return promiseCache;
+};
+
+const getCachedContinuousChapterSection = async (
+  doc: Document,
+  chapterDocList: ChapterDoc[],
+  index: number
+) => {
+  const cache = getContinuousChapterCache(doc);
+  if (cache.has(index)) {
+    return cache.get(index) || "";
+  }
+
+  const promiseCache = getContinuousChapterPromiseCache(doc);
+  if (!promiseCache.has(index)) {
+    const promise = buildContinuousChapterSection(chapterDocList, index)
+      .then((sectionHtml) => {
+        cache.set(index, sectionHtml);
+        promiseCache.delete(index);
+        return sectionHtml;
+      })
+      .catch((error) => {
+        promiseCache.delete(index);
+        throw error;
+      });
+    promiseCache.set(index, promise);
+  }
+  return await (promiseCache.get(index) as Promise<string>);
+};
+
+const prefetchContinuousChapterSections = (
+  doc: Document,
+  chapterDocList: ChapterDoc[],
+  currentChapterIndex: number
+) => {
+  if (currentChapterIndex < 0) return;
+  const startIndex = Math.max(
+    0,
+    currentChapterIndex - CONTINUOUS_CHAPTER_PREFETCH_RADIUS
+  );
+  const endIndex = Math.min(
+    chapterDocList.length - 1,
+    currentChapterIndex + CONTINUOUS_CHAPTER_PREFETCH_RADIUS
+  );
+  const runPrefetch = () => {
+    for (let index = startIndex; index <= endIndex; index++) {
+      getCachedContinuousChapterSection(doc, chapterDocList, index).catch(
+        () => {}
+      );
+    }
+  };
+  const requestIdleCallback = (window as any).requestIdleCallback;
+  if (requestIdleCallback) {
+    requestIdleCallback(runPrefetch, { timeout: 500 });
+  } else {
+    setTimeout(runPrefetch, 0);
+  }
 };
 
 const getContinuousChapterSection = (node: HTMLElement | null) => {
@@ -483,6 +668,7 @@ const maintainContinuousChapterWindow = async (
   );
   const beforeAnchorRect = anchorNode?.getBoundingClientRect?.();
   let didModifyWindow = false;
+  prefetchContinuousChapterSections(doc, chapterDocList, currentChapterIndex);
 
   for (let index = desiredStartIndex; index <= desiredEndIndex; index++) {
     if (doc.body.querySelector(`#${CSS.escape(continuousChapterId(index))}`)) {
@@ -536,6 +722,7 @@ const maintainContinuousChapterWindow = async (
 };
 
 const buildContinuousChapterText = async (
+  doc: Document,
   chapterDocList: ChapterDoc[],
   chapterDocIndex: number
 ) => {
@@ -555,7 +742,7 @@ const buildContinuousChapterText = async (
 
   for (let index = startIndex; index <= endIndex; index++) {
     chapterSections.push(
-      await buildContinuousChapterSection(chapterDocList, index)
+      await getCachedContinuousChapterSection(doc, chapterDocList, index)
     );
   }
 
@@ -615,11 +802,14 @@ export const handleRenderChapter = async (
     isDisableChapterBreak
   );
   let chapterText = isContinuousChapterRender
-    ? await buildContinuousChapterText(chapterDocList, chapterDocIndex)
+    ? await buildContinuousChapterText(doc, chapterDocList, chapterDocIndex)
     : await handleOneChapterDoc(chapterDocList[chapterDocIndex].text, false);
   let bodyAttrs = isContinuousChapterRender ? {} : getBodyAttributes(chapterText);
   const viewport = isContinuousChapterRender ? null : getViewportSize(chapterText);
   doc.body.innerHTML = chapterText;
+  if (isContinuousChapterRender) {
+    prefetchContinuousChapterSections(doc, chapterDocList, chapterDocIndex);
+  }
   // Apply body attrs without duplicating style on re-render
   if (bodyAttrs["class"]) {
     doc.body.setAttribute("class", bodyAttrs["class"]);
