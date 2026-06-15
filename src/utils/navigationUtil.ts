@@ -324,12 +324,10 @@ const shouldRenderContinuousChapters = (format: string) =>
     "XML",
   ].includes((format || "").toUpperCase());
 
-const buildContinuousChapterText = async (
-  chapterDocList: ChapterDoc[],
-  chapterDocIndex: number
-) => {
-  const chapterSections: string[] = [];
-  chapterSections.push(`
+const CONTINUOUS_CHAPTER_LOOK_BEHIND = 1;
+const CONTINUOUS_CHAPTER_LOOK_AHEAD = 4;
+
+const continuousChapterStyle = `
 <style id="kookit-continuous-chapter-style">
   .kookit-continuous-chapter,
   .kookit-continuous-chapter > *:first-child {
@@ -343,31 +341,92 @@ const buildContinuousChapterText = async (
   .kookit-continuous-chapter {
     display: block !important;
   }
-</style>`);
+</style>`;
+
+const buildContinuousChapterSection = async (
+  chapterDocList: ChapterDoc[],
+  index: number
+) => {
+  const chapterText = await handleOneChapterDoc(chapterDocList[index].text, false);
+  const chapterDoc = new DOMParser().parseFromString(chapterText, "text/html");
+  const bodyAttrs = getBodyAttributes(chapterText) as any;
+  const headHtml = chapterDoc.head ? chapterDoc.head.innerHTML : "";
+  const bodyHtml = chapterDoc.body ? chapterDoc.body.innerHTML : chapterText;
+  const className = escapeHtmlAttribute(bodyAttrs["class"] || "");
+  const style = escapeHtmlAttribute(bodyAttrs["style"] || "");
+
+  return `<section id="${continuousChapterId(index)}" data-kookit-chapter-doc-index="${index}" class="kookit-continuous-chapter ${className}" style="${style}">${headHtml}${bodyHtml}</section>`;
+};
+
+const getContinuousChapterSection = (node: HTMLElement | null) => {
+  return (node?.closest?.(".kookit-continuous-chapter") || null) as HTMLElement | null;
+};
+
+const getRenderedContinuousChapterIndexes = (doc: Document) => {
+  return Array.from(doc.body.querySelectorAll(".kookit-continuous-chapter"))
+    .map((section) =>
+      parseInt(
+        (section as HTMLElement).getAttribute("data-kookit-chapter-doc-index") ||
+          "-1"
+      )
+    )
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b);
+};
+
+const appendForwardContinuousChapters = async (
+  doc: Document,
+  chapterDocList: ChapterDoc[],
+  visibleChapterIndex: number
+) => {
+  const renderedIndexes = getRenderedContinuousChapterIndexes(doc);
+  if (!renderedIndexes.length) return;
+  const maxRenderedIndex = Math.max(...renderedIndexes);
+
+  // When the reader has entered the last pre-rendered chapters, append more
+  // chapters in the same iframe instead of clearing and re-rendering. This is
+  // especially important for TXT/MOBI/AZW3, where chapter hrefs often do not
+  // update location as reliably as EPUB href anchors.
+  if (visibleChapterIndex < maxRenderedIndex - 1) return;
+
+  const endIndex = Math.min(
+    chapterDocList.length - 1,
+    maxRenderedIndex + CONTINUOUS_CHAPTER_LOOK_AHEAD
+  );
+  for (let index = maxRenderedIndex + 1; index <= endIndex; index++) {
+    if (doc.body.querySelector(`#${CSS.escape(continuousChapterId(index))}`)) {
+      continue;
+    }
+    doc.body.insertAdjacentHTML(
+      "beforeend",
+      await buildContinuousChapterSection(chapterDocList, index)
+    );
+  }
+  await handleCssLink(doc);
+  await handlePlainText(doc);
+};
+
+const buildContinuousChapterText = async (
+  chapterDocList: ChapterDoc[],
+  chapterDocIndex: number
+) => {
+  const chapterSections: string[] = [continuousChapterStyle];
 
   // Lazy window: render only nearby chapters instead of the whole book.
-  // This keeps the next chapter in the same layout flow while avoiding the
-  // high CPU/memory cost of rendering every chapter at once.
-  const startIndex = Math.max(0, chapterDocIndex - 1);
-  const endIndex = Math.min(chapterDocList.length - 1, chapterDocIndex + 1);
+  // More chapters are appended on demand by handleRecord() as the reader moves
+  // forward, so scrolling can cross chapter boundaries without a hard reload.
+  const startIndex = Math.max(
+    0,
+    chapterDocIndex - CONTINUOUS_CHAPTER_LOOK_BEHIND
+  );
+  const endIndex = Math.min(
+    chapterDocList.length - 1,
+    chapterDocIndex + CONTINUOUS_CHAPTER_LOOK_AHEAD
+  );
 
   for (let index = startIndex; index <= endIndex; index++) {
-    const chapterText = await handleOneChapterDoc(
-      chapterDocList[index].text,
-      false
-    );
-    const chapterDoc = new DOMParser().parseFromString(
-      chapterText,
-      "text/html"
-    );
-    const bodyAttrs = getBodyAttributes(chapterText) as any;
-    const headHtml = chapterDoc.head ? chapterDoc.head.innerHTML : "";
-    const bodyHtml = chapterDoc.body ? chapterDoc.body.innerHTML : chapterText;
-    const className = escapeHtmlAttribute(bodyAttrs["class"] || "");
-    const style = escapeHtmlAttribute(bodyAttrs["style"] || "");
-
     chapterSections.push(
-      `<section id="${continuousChapterId(index)}" data-kookit-chapter-doc-index="${index}" class="kookit-continuous-chapter ${className}" style="${style}">${headHtml}${bodyHtml}</section>`
+      await buildContinuousChapterSection(chapterDocList, index)
     );
   }
 
@@ -773,17 +832,38 @@ export const handleRecord = async (
     firstVisibleNode = targetNode;
   }
   let count = 0;
-  for (let i = 0; i < nodeList.length; i++) {
+  let recordNodeList = nodeList;
+  let continuousSection = getContinuousChapterSection(firstVisibleNode);
+  let visibleChapterIndex = continuousSection
+    ? parseInt(
+        continuousSection.getAttribute("data-kookit-chapter-doc-index") || "-1"
+      )
+    : -1;
+
+  if (visibleChapterIndex >= 0 && chapterDocList[visibleChapterIndex]) {
+    tempLocation.chapterDocIndex = visibleChapterIndex + "";
+    tempLocation.chapterTitle = chapterDocList[visibleChapterIndex].label || "";
+    tempLocation.chapterHref = chapterDocList[visibleChapterIndex].href || "";
+    recordNodeList = getBlockElement(continuousSection);
+    await appendForwardContinuousChapters(
+      doc,
+      chapterDocList,
+      visibleChapterIndex
+    );
+  } else {
+    handleHashChapter(visibleNode, flattenChapters, tempLocation);
+  }
+
+  for (let i = 0; i < recordNodeList.length; i++) {
     if (
-      isScrolledIntoView(element, nodeList[i], readerMode) &&
+      isScrolledIntoView(element, recordNodeList[i], readerMode) &&
       firstVisibleNode &&
-      nodeList[i].innerHTML === firstVisibleNode.innerHTML
+      recordNodeList[i].innerHTML === firstVisibleNode.innerHTML
     ) {
       count = i;
       break;
     }
   }
-  handleHashChapter(visibleNode, flattenChapters, tempLocation);
   if (
     firstVisibleNode &&
     !isCurrentNodeFarFromParrent(firstVisibleNode, element, readerMode)
@@ -808,7 +888,7 @@ export const handleRecord = async (
         (_item, index) => index === parseInt(tempLocation.chapterDocIndex)
       )?.text.size || 0) /
         totalSize) *
-        (count / nodeList.length) +
+        (count / Math.max(recordNodeList.length, 1)) +
       "";
   } else {
     tempLocation.page =
