@@ -324,8 +324,8 @@ const shouldRenderContinuousChapters = (format: string) =>
     "XML",
   ].includes((format || "").toUpperCase());
 
-const CONTINUOUS_CHAPTER_LOOK_BEHIND = 1;
-const CONTINUOUS_CHAPTER_LOOK_AHEAD = 4;
+const CONTINUOUS_CHAPTER_LOOK_BEHIND = 3;
+const CONTINUOUS_CHAPTER_LOOK_AHEAD = 3;
 
 const continuousChapterStyle = `
 <style id="kookit-continuous-chapter-style">
@@ -374,26 +374,44 @@ const getRenderedContinuousChapterIndexes = (doc: Document) => {
     .sort((a, b) => a - b);
 };
 
-const appendForwardContinuousChapters = async (
+const ensureContinuousChapterWindow = async (
   doc: Document,
   chapterDocList: ChapterDoc[],
-  visibleChapterIndex: number
+  visibleChapterIndex: number,
+  anchorNode: HTMLElement | null
 ) => {
+  if (visibleChapterIndex < 0) return;
+
   const renderedIndexes = getRenderedContinuousChapterIndexes(doc);
-  if (!renderedIndexes.length) return;
-  const maxRenderedIndex = Math.max(...renderedIndexes);
-
-  // When the reader has entered the last pre-rendered chapters, append more
-  // chapters in the same iframe instead of clearing and re-rendering. This is
-  // especially important for TXT/MOBI/AZW3, where chapter hrefs often do not
-  // update location as reliably as EPUB href anchors.
-  if (visibleChapterIndex < maxRenderedIndex - 1) return;
-
-  const endIndex = Math.min(
-    chapterDocList.length - 1,
-    maxRenderedIndex + CONTINUOUS_CHAPTER_LOOK_AHEAD
+  const renderedSet = new Set(renderedIndexes);
+  const desiredStartIndex = Math.max(
+    0,
+    visibleChapterIndex - CONTINUOUS_CHAPTER_LOOK_BEHIND
   );
-  for (let index = maxRenderedIndex + 1; index <= endIndex; index++) {
+  const desiredEndIndex = Math.min(
+    chapterDocList.length - 1,
+    visibleChapterIndex + CONTINUOUS_CHAPTER_LOOK_AHEAD
+  );
+
+  const beforeAnchorRect = anchorNode?.getBoundingClientRect?.();
+
+  const prependSections: string[] = [];
+  for (let index = desiredStartIndex; index < visibleChapterIndex; index++) {
+    if (!renderedSet.has(index)) {
+      prependSections.push(await buildContinuousChapterSection(chapterDocList, index));
+    }
+  }
+
+  if (prependSections.length) {
+    const firstSection = doc.body.querySelector(".kookit-continuous-chapter");
+    if (firstSection) {
+      firstSection.insertAdjacentHTML("beforebegin", prependSections.join(""));
+    } else {
+      doc.body.insertAdjacentHTML("beforeend", prependSections.join(""));
+    }
+  }
+
+  for (let index = visibleChapterIndex + 1; index <= desiredEndIndex; index++) {
     if (doc.body.querySelector(`#${CSS.escape(continuousChapterId(index))}`)) {
       continue;
     }
@@ -402,8 +420,19 @@ const appendForwardContinuousChapters = async (
       await buildContinuousChapterSection(chapterDocList, index)
     );
   }
+
   await handleCssLink(doc);
   await handlePlainText(doc);
+
+  // Prepending chapters changes scrollLeft/scrollTop in paginated layouts. Keep
+  // the same visible text under the user's eyes instead of causing a jump.
+  if (prependSections.length && anchorNode && beforeAnchorRect) {
+    const afterAnchorRect = anchorNode.getBoundingClientRect();
+    doc.body.scrollBy(
+      afterAnchorRect.left - beforeAnchorRect.left,
+      afterAnchorRect.top - beforeAnchorRect.top
+    );
+  }
 };
 
 const buildContinuousChapterText = async (
@@ -413,8 +442,9 @@ const buildContinuousChapterText = async (
   const chapterSections: string[] = [continuousChapterStyle];
 
   // Lazy window: render only nearby chapters instead of the whole book.
-  // More chapters are appended on demand by handleRecord() as the reader moves
-  // forward, so scrolling can cross chapter boundaries without a hard reload.
+  // handleRecord() keeps this window centered around the currently visible
+  // chapter, so both downward and upward reading can cross chapter boundaries
+  // without a hard reload.
   const startIndex = Math.max(
     0,
     chapterDocIndex - CONTINUOUS_CHAPTER_LOOK_BEHIND
@@ -845,10 +875,11 @@ export const handleRecord = async (
     tempLocation.chapterTitle = chapterDocList[visibleChapterIndex].label || "";
     tempLocation.chapterHref = chapterDocList[visibleChapterIndex].href || "";
     recordNodeList = getBlockElement(continuousSection);
-    await appendForwardContinuousChapters(
+    await ensureContinuousChapterWindow(
       doc,
       chapterDocList,
-      visibleChapterIndex
+      visibleChapterIndex,
+      firstVisibleNode
     );
   } else {
     handleHashChapter(visibleNode, flattenChapters, tempLocation);
