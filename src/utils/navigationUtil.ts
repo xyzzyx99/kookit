@@ -307,7 +307,22 @@ const escapeHtmlAttribute = (value: string) =>
     .replace(/>/g, "&gt;");
 
 const shouldRenderContinuousChapters = (format: string) =>
-  format === "EPUB" || format === "CACHE";
+  [
+    "EPUB",
+    "CACHE",
+    "MOBI",
+    "AZW",
+    "AZW3",
+    "TXT",
+    "MD",
+    "FB2",
+    "DOCX",
+    "HTML",
+    "XHTML",
+    "HTM",
+    "MHTML",
+    "XML",
+  ].includes((format || "").toUpperCase());
 
 const buildContinuousChapterText = async (
   chapterDocList: ChapterDoc[],
