@@ -1156,40 +1156,61 @@ export const handleRecord = async (
   }
   let count = 0;
   let recordNodeList = nodeList;
-  let visibleChapterIndex = getViewportCenterChapterIndex(
+  const windowChapterIndex = getViewportCenterChapterIndex(
     element,
     readerMode,
     doc
   );
-  let continuousSection =
-    visibleChapterIndex >= 0
-      ? (doc.body.querySelector(
-          `#${CSS.escape(continuousChapterId(visibleChapterIndex))}`
-        ) as HTMLElement | null)
-      : getContinuousChapterSection(firstVisibleNode);
+  let continuousSection = getContinuousChapterSection(firstVisibleNode);
+  let visibleChapterIndex = getContinuousChapterIndexFromSection(continuousSection);
 
-  if (continuousSection && visibleChapterIndex < 0) {
-    visibleChapterIndex = getContinuousChapterIndexFromSection(continuousSection);
+  // The header and TOC highlight should follow the first visible text near the
+  // top/start of the viewport. The sliding preload window can still be centered
+  // around the viewport center to avoid late loading near chapter boundaries.
+  if (visibleChapterIndex < 0 && windowChapterIndex >= 0) {
+    visibleChapterIndex = windowChapterIndex;
+    continuousSection = doc.body.querySelector(
+      `#${CSS.escape(continuousChapterId(visibleChapterIndex))}`
+    ) as HTMLElement | null;
   }
 
   if (visibleChapterIndex >= 0 && chapterDocList[visibleChapterIndex]) {
+    const visibleChapterDoc = chapterDocList[visibleChapterIndex];
+    recordNodeList = continuousSection
+      ? getBlockElement(continuousSection)
+      : nodeList;
+    const continuousVisibleNode = recordNodeList.filter(
+      (s) =>
+        isScrolledIntoView(element, s as HTMLElement, readerMode) &&
+        ((s as HTMLElement).textContent || "").trim()
+    );
+
     if (!targetNode) {
       firstVisibleNode =
         findFirstVisibleNodeInSection(element, readerMode, continuousSection) ||
         firstVisibleNode;
     }
+
     tempLocation.chapterDocIndex = visibleChapterIndex + "";
-    tempLocation.chapterTitle = chapterDocList[visibleChapterIndex].label || "";
-    tempLocation.chapterHref = chapterDocList[visibleChapterIndex].href || "";
-    recordNodeList = continuousSection
-      ? getBlockElement(continuousSection)
-      : nodeList;
+    tempLocation.chapterTitle = visibleChapterDoc.label || "";
+    tempLocation.chapterHref = visibleChapterDoc.href || "";
+
+    // Continuous mode renders several chapter documents in one iframe. The
+    // visible document section should drive the top title and TOC highlight,
+    // while hash-based sub-chapters inside that section should still be able to
+    // refine the title/href like the original one-chapter renderer did.
+    handleHashChapter(
+      continuousVisibleNode.length > 0 ? continuousVisibleNode : visibleNode,
+      flattenChapters,
+      tempLocation
+    );
+
     await maintainContinuousChapterWindow(
       element,
       readerMode,
       doc,
       chapterDocList,
-      visibleChapterIndex,
+      windowChapterIndex >= 0 ? windowChapterIndex : visibleChapterIndex,
       firstVisibleNode
     );
   } else {
