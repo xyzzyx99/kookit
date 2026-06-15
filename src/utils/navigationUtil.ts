@@ -476,6 +476,7 @@ const maintainContinuousChapterWindow = async (
     currentChapterIndex + CONTINUOUS_CHAPTER_LOOK_AHEAD
   );
   const beforeAnchorRect = anchorNode?.getBoundingClientRect?.();
+  let didModifyWindow = false;
 
   for (let index = desiredStartIndex; index <= desiredEndIndex; index++) {
     if (doc.body.querySelector(`#${CSS.escape(continuousChapterId(index))}`)) {
@@ -496,6 +497,7 @@ const maintainContinuousChapterWindow = async (
     } else {
       doc.body.insertAdjacentHTML("beforeend", newSectionHtml);
     }
+    didModifyWindow = true;
   }
 
   Array.from(doc.body.querySelectorAll(".kookit-continuous-chapter")).forEach(
@@ -503,9 +505,12 @@ const maintainContinuousChapterWindow = async (
       const index = getContinuousChapterIndexFromSection(section);
       if (index < desiredStartIndex || index > desiredEndIndex) {
         section.remove();
+        didModifyWindow = true;
       }
     }
   );
+
+  if (!didModifyWindow) return;
 
   await handleCssLink(doc);
   await handlePlainText(doc);
