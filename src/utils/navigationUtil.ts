@@ -212,7 +212,8 @@ export const handlePrevChapter = async (
   format: string,
   tempLocation: any,
   doc: Document,
-  iframe: any
+  iframe: any,
+  isDisableChapterBreak?: string
 ) => {
   let chapterDocIndex = parseInt(tempLocation.chapterDocIndex || "0");
   let chapterHref = tempLocation.chapterHref || "";
@@ -239,7 +240,8 @@ export const handlePrevChapter = async (
     format,
     tempLocation,
     doc,
-    iframe
+    iframe,
+    isDisableChapterBreak
   );
 };
 export const isElementFootnote = (element: HTMLElement) => {
@@ -306,7 +308,11 @@ const escapeHtmlAttribute = (value: string) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-const shouldRenderContinuousChapters = (format: string) =>
+const shouldRenderContinuousChapters = (
+  format: string,
+  isDisableChapterBreak?: string
+) =>
+  isDisableChapterBreak === "yes" &&
   [
     "EPUB",
     "CACHE",
@@ -566,7 +572,8 @@ export const handleRenderChapter = async (
   format: string,
   tempLocation: any,
   doc: Document,
-  iframe: any
+  iframe: any,
+  isDisableChapterBreak?: string
 ) => {
   doc.body.innerHTML = "";
   iframe.height = 0 + "px";
@@ -603,7 +610,10 @@ export const handleRenderChapter = async (
   if (chapterDocIndex === -1 || chapterDocIndex > chapterDocList.length - 1) {
     chapterDocIndex = 0;
   }
-  const isContinuousChapterRender = shouldRenderContinuousChapters(format);
+  const isContinuousChapterRender = shouldRenderContinuousChapters(
+    format,
+    isDisableChapterBreak
+  );
   let chapterText = isContinuousChapterRender
     ? await buildContinuousChapterText(chapterDocList, chapterDocIndex)
     : await handleOneChapterDoc(chapterDocList[chapterDocIndex].text, false);
@@ -1113,7 +1123,8 @@ export const handleNextChapter = async (
   format: string,
   tempLocation: any,
   doc: Document,
-  iframe: any
+  iframe: any,
+  isDisableChapterBreak?: string
 ) => {
   let chapterDocIndex = parseInt(tempLocation.chapterDocIndex || "0");
   let chapterHref = tempLocation.chapterHref || "";
@@ -1139,7 +1150,8 @@ export const handleNextChapter = async (
     format,
     tempLocation,
     doc,
-    iframe
+    iframe,
+    isDisableChapterBreak
   );
 };
 export const getAudioText = (

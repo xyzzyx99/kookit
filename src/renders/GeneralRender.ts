@@ -68,6 +68,7 @@ class GeneralRender extends EventEmitter {
   isMobile: string | undefined;
   isBionic: string = "no";
   isAllowScript: string = "no";
+  isDisableChapterBreak: string = "no";
   touchEventSet: any;
   scrollTimer: any;
   recordTimer: any;
@@ -94,6 +95,7 @@ class GeneralRender extends EventEmitter {
     isAllowScript?: string;
     fullTranslationMode?: string;
     bookLayout?: string;
+    isDisableChapterBreak?: string;
   }) {
     super();
     this.readerMode = config.readerMode;
@@ -123,6 +125,7 @@ class GeneralRender extends EventEmitter {
     window.fullTranslationMode = this.fullTranslationMode;
     this.bookLayout = config.bookLayout || "";
     window.bookLayout = this.bookLayout;
+    this.isDisableChapterBreak = config.isDisableChapterBreak || "no";
 
     //手机版环境已经有严格的安全限制，无需额外限制，PDF中无法执行代码，强行开启则无法渲染图书
     this.isAllowScript =
@@ -449,7 +452,8 @@ class GeneralRender extends EventEmitter {
       this.format,
       this.tempLocation,
       doc,
-      iframe
+      iframe,
+      this.isDisableChapterBreak
     );
     if (chapterHref && chapterHref.startsWith("kindle")) {
       let result = await this.book.resolveHref(chapterHref);
@@ -500,7 +504,8 @@ class GeneralRender extends EventEmitter {
       this.format,
       this.tempLocation,
       doc,
-      iframe
+      iframe,
+      this.isDisableChapterBreak
     );
     if (cfi) {
       const cfiInfo = new CFI(cfi, {});
@@ -619,7 +624,8 @@ class GeneralRender extends EventEmitter {
       this.format,
       this.tempLocation,
       doc,
-      this.getIframe()
+      this.getIframe(),
+      this.isDisableChapterBreak
     );
     doc = this.getDocument();
     if (!doc) return;
@@ -659,7 +665,8 @@ class GeneralRender extends EventEmitter {
         this.format,
         this.tempLocation,
         doc,
-        iframe
+        iframe,
+        this.isDisableChapterBreak
       );
       let chapterDocIndex = parseInt(this.tempLocation.chapterDocIndex || "-1");
       if (chapterDocIndex > -1) {
@@ -728,7 +735,8 @@ class GeneralRender extends EventEmitter {
         this.format,
         this.tempLocation,
         doc,
-        iframe
+        iframe,
+        this.isDisableChapterBreak
       );
       this.trigger("rendered");
       return;
@@ -793,7 +801,8 @@ class GeneralRender extends EventEmitter {
       this.format,
       this.tempLocation,
       doc,
-      iframe
+      iframe,
+      this.isDisableChapterBreak
     );
     await this.record();
     this.trigger("rendered");
@@ -810,7 +819,8 @@ class GeneralRender extends EventEmitter {
       this.format,
       this.tempLocation,
       doc,
-      iframe
+      iframe,
+      this.isDisableChapterBreak
     );
     await this.record();
     this.trigger("rendered");
