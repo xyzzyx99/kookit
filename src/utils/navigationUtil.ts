@@ -365,6 +365,56 @@ const continuousChapterWorkerRequests = new Map<
     reject: (reason?: any) => void;
   }
 >();
+let continuousChapterVisibilityListenerRegistered = false;
+let lastContinuousChapterPrefetchRequest: {
+  doc: Document;
+  chapterDocList: ChapterDoc[];
+  currentChapterIndex: number;
+} | null = null;
+
+const isContinuousChapterBackgroundSuspended = () =>
+  typeof document !== "undefined" &&
+  (document.hidden || document.visibilityState !== "visible");
+
+const createContinuousChapterSuspendedError = () =>
+  new Error("continuous chapter prefetch suspended");
+
+const isContinuousChapterSuspendedError = (error: any) =>
+  error && error.message === "continuous chapter prefetch suspended";
+
+const suspendContinuousChapterWorker = () => {
+  if (continuousChapterWorker) {
+    continuousChapterWorkerRequests.forEach((request) =>
+      request.reject(createContinuousChapterSuspendedError())
+    );
+    continuousChapterWorkerRequests.clear();
+    continuousChapterWorker.terminate();
+  }
+  continuousChapterWorker = undefined;
+};
+
+const ensureContinuousChapterVisibilityListener = () => {
+  if (
+    continuousChapterVisibilityListenerRegistered ||
+    typeof document === "undefined"
+  ) {
+    return;
+  }
+  continuousChapterVisibilityListenerRegistered = true;
+  document.addEventListener("visibilitychange", () => {
+    if (isContinuousChapterBackgroundSuspended()) {
+      suspendContinuousChapterWorker();
+      return;
+    }
+    if (lastContinuousChapterPrefetchRequest) {
+      prefetchContinuousChapterSections(
+        lastContinuousChapterPrefetchRequest.doc,
+        lastContinuousChapterPrefetchRequest.chapterDocList,
+        lastContinuousChapterPrefetchRequest.currentChapterIndex
+      );
+    }
+  });
+};
 
 const continuousChapterWorkerSource = String.raw`
 const escapeHtmlAttribute = (value) =>
@@ -408,6 +458,8 @@ self.onmessage = (event) => {
 `;
 
 const getContinuousChapterWorker = () => {
+  ensureContinuousChapterVisibilityListener();
+  if (isContinuousChapterBackgroundSuspended()) return null;
   if (continuousChapterWorker !== undefined) return continuousChapterWorker;
   if (typeof Worker === "undefined" || typeof Blob === "undefined") {
     continuousChapterWorker = null;
@@ -482,7 +534,12 @@ const buildContinuousChapterSectionWithWorker = (
       continuousChapterWorkerRequests.delete(id);
       reject(error);
     }
-  }).catch(() => buildContinuousChapterSectionOnMainThread(chapterText, index));
+  }).catch((error) => {
+    if (isContinuousChapterSuspendedError(error)) {
+      throw error;
+    }
+    return buildContinuousChapterSectionOnMainThread(chapterText, index);
+  });
 };
 
 const buildContinuousChapterSection = async (
@@ -543,7 +600,12 @@ const prefetchContinuousChapterSections = (
   chapterDocList: ChapterDoc[],
   currentChapterIndex: number
 ) => {
-  if (currentChapterIndex < 0) return;
+  ensureContinuousChapterVisibilityListener();
+  lastContinuousChapterPrefetchRequest = { doc, chapterDocList, currentChapterIndex };
+  if (currentChapterIndex < 0 || isContinuousChapterBackgroundSuspended()) {
+    suspendContinuousChapterWorker();
+    return;
+  }
   const startIndex = Math.max(
     0,
     currentChapterIndex - CONTINUOUS_CHAPTER_PREFETCH_RADIUS
@@ -553,6 +615,10 @@ const prefetchContinuousChapterSections = (
     currentChapterIndex + CONTINUOUS_CHAPTER_PREFETCH_RADIUS
   );
   const runPrefetch = () => {
+    if (isContinuousChapterBackgroundSuspended()) {
+      suspendContinuousChapterWorker();
+      return;
+    }
     for (let index = startIndex; index <= endIndex; index++) {
       getCachedContinuousChapterSection(doc, chapterDocList, index).catch(
         () => {}
