@@ -243,31 +243,65 @@ class GeneralRender extends EventEmitter {
     this.trigger("scroll-text");
   }
   async goToPage(targetPage: number) {
+    let doc = this.getDocument();
+    if (!doc) return;
+
+    const currentChapterIndex = parseInt(
+      this.tempLocation.chapterDocIndex || "0"
+    );
+    const continuousChapterSection = doc.body.querySelector(
+      `#kookit-continuous-chapter-${currentChapterIndex}`
+    ) as HTMLElement | null;
+    const getLayoutPageIndex = (page: number) => {
+      if (this.readerMode === "double") {
+        page = (page % 2 === 0 ? page - 2 : page - 1) / 2;
+      } else {
+        page = page - 1;
+      }
+      return page < 0 ? 0 : page;
+    };
+
     if (this.readerMode === "scroll") {
       if (targetPage < 0) {
         targetPage = 1;
       }
 
-      let top = (targetPage - 1) * (this.element.clientHeight - 50);
+      const pageHeight = Math.max(1, this.element.clientHeight - 50);
+      let top = (targetPage - 1) * pageHeight;
+      if (continuousChapterSection) {
+        const sectionStart = continuousChapterSection.offsetTop;
+        const sectionEnd =
+          sectionStart +
+          Math.max(
+            1,
+            continuousChapterSection.scrollHeight ||
+              continuousChapterSection.offsetHeight
+          );
+        top = Math.min(sectionStart + top, Math.max(sectionStart, sectionEnd - pageHeight));
+      }
       this.element.scrollTo(0, top);
     } else {
-      let doc = this.getDocument();
-      if (!doc) return;
       if (this.isVertical()) {
         let section = Math.floor(this.element.clientHeight / 12);
         let gap = section % 2 === 0 ? section : section - 1;
         const height = this.element.clientHeight;
         const scrollDistance = height + gap;
-        if (this.readerMode === "double") {
-          targetPage =
-            (targetPage % 2 === 0 ? targetPage - 2 : targetPage - 1) / 2;
-        } else {
-          targetPage = targetPage - 1;
+        targetPage = getLayoutPageIndex(targetPage);
+        let targetScrollTop = targetPage * scrollDistance;
+        if (continuousChapterSection) {
+          const sectionStart = continuousChapterSection.offsetTop;
+          const sectionEnd =
+            sectionStart +
+            Math.max(
+              1,
+              continuousChapterSection.scrollHeight ||
+                continuousChapterSection.offsetHeight
+            );
+          targetScrollTop = Math.min(
+            sectionStart + targetScrollTop,
+            Math.max(sectionStart, sectionEnd - scrollDistance)
+          );
         }
-        if (targetPage < 0) {
-          targetPage = 0;
-        }
-        const targetScrollTop = targetPage * scrollDistance;
         doc.body.scrollTo({
           left: 0,
           top: targetScrollTop,
@@ -281,16 +315,22 @@ class GeneralRender extends EventEmitter {
         let gap = section % 2 === 0 ? section : section - 1;
         const width = this.element.clientWidth;
         const scrollDistance = width + gap;
-        if (this.readerMode === "double") {
-          targetPage =
-            (targetPage % 2 === 0 ? targetPage - 2 : targetPage - 1) / 2;
-        } else {
-          targetPage = targetPage - 1;
+        targetPage = getLayoutPageIndex(targetPage);
+        let targetScrollLeft = targetPage * scrollDistance;
+        if (continuousChapterSection) {
+          const sectionStart = continuousChapterSection.offsetLeft;
+          const sectionEnd =
+            sectionStart +
+            Math.max(
+              1,
+              continuousChapterSection.scrollWidth ||
+                continuousChapterSection.offsetWidth
+            );
+          targetScrollLeft = Math.min(
+            sectionStart + targetScrollLeft,
+            Math.max(sectionStart, sectionEnd - scrollDistance)
+          );
         }
-        if (targetPage < 0) {
-          targetPage = 0;
-        }
-        const targetScrollLeft = targetPage * scrollDistance;
         doc.body.scrollTo({
           top: 0,
           left: targetScrollLeft,
