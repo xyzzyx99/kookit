@@ -220,11 +220,96 @@ export const createIframe = (
   }
 };
 
+const clampPageNumber = (value: number, totalPage: number) => {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(Math.max(1, value), Math.max(1, totalPage));
+};
+
+const getContinuousChapterProgressInfo = (
+  readerMode: string,
+  doc: Document,
+  element: any
+) => {
+  const sections = Array.from(
+    doc.body.querySelectorAll(".kookit-continuous-chapter")
+  ) as HTMLElement[];
+  if (sections.length === 0) return null;
+
+  const vertical = isVerticalLayout() && readerMode !== "scroll";
+  const axisStart =
+    readerMode === "scroll"
+      ? element.scrollTop
+      : vertical
+        ? doc.body.scrollTop
+        : doc.body.scrollLeft;
+  const measureStart = (section: HTMLElement) =>
+    readerMode === "scroll" || vertical ? section.offsetTop : section.offsetLeft;
+  const measureSize = (section: HTMLElement) =>
+    readerMode === "scroll" || vertical
+      ? section.scrollHeight || section.offsetHeight
+      : section.scrollWidth || section.offsetWidth;
+
+  const activeSection =
+    sections.find((section) => {
+      const start = measureStart(section);
+      const end = start + measureSize(section);
+      return axisStart + 1 >= start && axisStart + 1 < end;
+    }) ||
+    sections.find((section) => measureStart(section) + measureSize(section) > axisStart) ||
+    sections[0];
+
+  if (!activeSection) return null;
+
+  const sectionStart = measureStart(activeSection);
+  const sectionSize = Math.max(1, measureSize(activeSection));
+
+  if (readerMode === "scroll") {
+    const pageHeight = Math.max(1, element.clientHeight - 50);
+    const totalPage = Math.max(1, Math.ceil(sectionSize / pageHeight));
+    const currentPage = clampPageNumber(
+      Math.floor((axisStart - sectionStart) / pageHeight) + 1,
+      totalPage
+    );
+    return { totalPage, currentPage };
+  }
+
+  if (vertical) {
+    let section = Math.floor(element.clientHeight / 12);
+    let gap = section % 2 === 0 ? section : section - 1;
+    const pageHeight = Math.max(1, doc.body.clientHeight + gap);
+    const rawTotalPage = Math.max(1, Math.ceil(sectionSize / pageHeight));
+    const totalPage = readerMode === "single" ? rawTotalPage : rawTotalPage * 2;
+    const currentPage = clampPageNumber(
+      Math.round((axisStart - sectionStart) / pageHeight) + 1,
+      totalPage
+    );
+    return { totalPage, currentPage };
+  }
+
+  let section = Math.floor(element.clientWidth / 12);
+  let gap = section % 2 === 0 ? section : section - 1;
+  const pageWidth = Math.max(1, doc.body.clientWidth + gap);
+  const rawTotalPage = Math.max(1, Math.ceil(sectionSize / pageWidth));
+  const totalPage = readerMode === "single" ? rawTotalPage : rawTotalPage * 2;
+  const currentPage = clampPageNumber(
+    Math.round((axisStart - sectionStart) / pageWidth) + 1,
+    totalPage
+  );
+  return { totalPage, currentPage };
+};
+
 export const progressInfo = (
   readerMode: string,
   doc: Document,
   element: any
 ) => {
+  const continuousProgressInfo = getContinuousChapterProgressInfo(
+    readerMode,
+    doc,
+    element
+  );
+  if (continuousProgressInfo) return continuousProgressInfo;
+
   const vertical = isVerticalLayout() && readerMode !== "scroll";
   if (vertical) {
     let section = Math.floor(element.clientHeight / 12);
@@ -711,9 +796,9 @@ export function getSelectedElement(doc: Document) {
 /**
  * 向文档文本节点注入软连字符（U+00AD），解决 Electron 无 Chromium 连字词典时
  * `hyphens: auto` 静默失效的问题。CSS 规范保证：即使 hyphens:auto 无词典，
- * 浏览器仍会在 \u00AD 处断行并插入可见连字符。
+ * 浏览器仍可能会在 \u00AD 处断行并插入可见连字符。
  *
- * 调用时机：章节内容渲染完成后，在 Electron 环境中调用。
+ * 调用时机：章节内容渲染完可能成后，在 Electron 环境中调用。
  * @param doc - iframe 的 contentDocument
  */
 export const applyHyphenation = (doc: Document): void => {
